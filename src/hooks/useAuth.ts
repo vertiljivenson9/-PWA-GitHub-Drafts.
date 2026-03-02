@@ -5,6 +5,16 @@ import { db } from '../lib/db';
 const GITHUB_CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID;
 const GITHUB_REDIRECT_URI = import.meta.env.VITE_GITHUB_REDIRECT_URI;
 
+const WORKER_URL =
+  'https://morning-recipe-f04e.vertiljivenson9.workers.dev';
+
+function base64URLEncode(buffer: Uint8Array): string {
+  return btoa(String.fromCharCode(...buffer))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+}
+
 function generateCodeVerifier(): string {
   const array = new Uint8Array(32);
   crypto.getRandomValues(array);
@@ -16,13 +26,6 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
   const data = encoder.encode(verifier);
   const hash = await crypto.subtle.digest('SHA-256', data);
   return base64URLEncode(new Uint8Array(hash));
-}
-
-function base64URLEncode(buffer: Uint8Array): string {
-  return btoa(String.fromCharCode(...buffer))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
 }
 
 function generateState(): string {
@@ -68,6 +71,7 @@ export function useAuth() {
 
   const handleCallback = useCallback(async () => {
     const urlParams = new URLSearchParams(window.location.search);
+
     const code = urlParams.get('code');
     const state = urlParams.get('state');
     const error = urlParams.get('error');
@@ -90,7 +94,7 @@ export function useAuth() {
     }
 
     try {
-      const response = await fetch('/api/exchange-token', {
+      const response = await fetch(WORKER_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code, verifier }),
@@ -118,6 +122,10 @@ export function useAuth() {
       localStorage.removeItem('github_pkce_verifier');
 
       const newOctokit = new Octokit({ auth: access_token });
+
+      // Validación real contra GitHub
+      await newOctokit.users.getAuthenticated();
+
       setOctokit(newOctokit);
       setIsAuthenticated(true);
 
@@ -131,6 +139,7 @@ export function useAuth() {
     const init = async () => {
       try {
         const urlParams = new URLSearchParams(window.location.search);
+
         if (urlParams.get('code')) {
           await handleCallback();
           setLoading(false);
@@ -140,7 +149,10 @@ export function useAuth() {
         const prefs = await db.preferences.get('github-auth');
 
         if (prefs?.githubToken) {
-          const newOctokit = new Octokit({ auth: prefs.githubToken });
+          const newOctokit = new Octokit({
+            auth: prefs.githubToken,
+          });
+
           await newOctokit.users.getAuthenticated();
 
           setOctokit(newOctokit);
