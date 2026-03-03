@@ -117,29 +117,23 @@ export function useAuth() {
   /* =========================
      Handle OAuth Callback
   ========================= */
+const handleCallback = useCallback(
+  async (code: string): Promise<boolean> => {
+    const state = new URLSearchParams(window.location.search).get('state');
 
-  const handleCallback = useCallback(async () => {
-    const urlParams = new URLSearchParams(window.location.search);
-
-    const code = urlParams.get('code');
-    const state = urlParams.get('state');
-    const error = urlParams.get('error');
-
-    if (error) {
-      throw new Error(`GitHub OAuth Error: ${error}`);
-    }
-
-    if (!code || !state) return;
+    if (!code || !state) return false;
 
     const savedState = localStorage.getItem('github_oauth_state');
     const verifier = localStorage.getItem('github_pkce_verifier');
 
     if (!savedState || savedState !== state) {
-      throw new Error('Invalid OAuth state');
+      console.error('Invalid OAuth state');
+      return false;
     }
 
     if (!verifier) {
-      throw new Error('Missing PKCE verifier');
+      console.error('Missing PKCE verifier');
+      return false;
     }
 
     try {
@@ -150,17 +144,18 @@ export function useAuth() {
       });
 
       if (!response.ok) {
-        throw new Error('Token exchange failed');
+        console.error('Token exchange failed');
+        return false;
       }
 
       const { access_token } = await response.json();
 
       if (!access_token) {
-        throw new Error('No access token received');
+        console.error('No access token received');
+        return false;
       }
 
       const newOctokit = new Octokit({ auth: access_token });
-
       const { data } = await newOctokit.users.getAuthenticated();
 
       await putPreference({
@@ -169,21 +164,24 @@ export function useAuth() {
         tokenExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
       });
 
-      window.history.replaceState({}, document.title, window.location.pathname);
-
       localStorage.removeItem('github_oauth_state');
       localStorage.removeItem('github_pkce_verifier');
+
+      window.history.replaceState({}, document.title, window.location.pathname);
 
       setOctokit(newOctokit);
       setUser(data);
       setIsAuthenticated(true);
 
+      return true;
     } catch (err) {
       console.error(err);
       await logout();
+      return false;
     }
-  }, [logout]);
-
+  },
+  [logout]
+);
   /* =========================
      Init
   ========================= */
