@@ -1,12 +1,43 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Octokit } from '@octokit/rest';
-import { db } from '../lib/db';
+import { openDB } from 'idb';
 
 const GITHUB_CLIENT_ID = import.meta.env.VITE_GITHUB_CLIENT_ID;
 const GITHUB_REDIRECT_URI = import.meta.env.VITE_GITHUB_REDIRECT_URI;
 
 const WORKER_URL =
   'https://morning-recipe-f04e.vertiljivenson9.workers.dev';
+
+/* =========================
+   IndexedDB Setup
+========================= */
+
+const dbPromise = openDB('github-drafts', 1, {
+  upgrade(database) {
+    if (!database.objectStoreNames.contains('preferences')) {
+      database.createObjectStore('preferences', { keyPath: 'id' });
+    }
+  },
+});
+
+async function getPreference(id: string) {
+  const db = await dbPromise;
+  return db.get('preferences', id);
+}
+
+async function putPreference(value: any) {
+  const db = await dbPromise;
+  return db.put('preferences', value);
+}
+
+async function clearPreferences() {
+  const db = await dbPromise;
+  return db.clear('preferences');
+}
+
+/* =========================
+   PKCE Helpers
+========================= */
 
 function base64URLEncode(buffer: Uint8Array): string {
   return btoa(String.fromCharCode(...buffer))
@@ -34,10 +65,19 @@ function generateState(): string {
   return base64URLEncode(array);
 }
 
+/* =========================
+   Hook
+========================= */
+
 export function useAuth() {
   const [octokit, setOctokit] = useState<Octokit | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(true);
+  const [user, setUser] = useState<any>(null);
+
+  /* =========================
+     Login
+  ========================= */
 
   const login = useCallback(async () => {
     const verifier = generateCodeVerifier();
@@ -61,13 +101,22 @@ export function useAuth() {
       `https://github.com/login/oauth/authorize?${params.toString()}`;
   }, []);
 
+  /* =========================
+     Logout
+  ========================= */
+
   const logout = useCallback(async () => {
-    await db.preferences.clear();
+    await clearPreferences();
     localStorage.removeItem('github_pkce_verifier');
     localStorage.removeItem('github_oauth_state');
     setOctokit(null);
+    setUser(null);
     setIsAuthenticated(false);
   }, []);
+
+  /* =========================
+     Handle OAuth Callback
+  ========================= */
 
   const handleCallback = useCallback(async () => {
     const urlParams = new URLSearchParams(window.location.search);
@@ -110,7 +159,11 @@ export function useAuth() {
         throw new Error('No access token received');
       }
 
-      await db.preferences.put({
+      const newOctokit = new Octokit({ auth: access_token });
+
+      const { data } = await newOctokit.users.getAuthenticated();
+
+      await putPreference({
         id: 'github-auth',
         githubToken: access_token,
         tokenExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
@@ -121,12 +174,8 @@ export function useAuth() {
       localStorage.removeItem('github_oauth_state');
       localStorage.removeItem('github_pkce_verifier');
 
-      const newOctokit = new Octokit({ auth: access_token });
-
-      // Validación real contra GitHub
-      await newOctokit.users.getAuthenticated();
-
       setOctokit(newOctokit);
+      setUser(data);
       setIsAuthenticated(true);
 
     } catch (err) {
@@ -135,6 +184,10 @@ export function useAuth() {
     }
   }, [logout]);
 
+  /* =========================
+     Init
+  ========================= */
+
   useEffect(() => {
     const init = async () => {
       try {
@@ -142,20 +195,21 @@ export function useAuth() {
 
         if (urlParams.get('code')) {
           await handleCallback();
-          setLoading(false);
+          setIsLoading(false);
           return;
         }
 
-        const prefs = await db.preferences.get('github-auth');
+        const prefs = await getPreference('github-auth');
 
         if (prefs?.githubToken) {
           const newOctokit = new Octokit({
             auth: prefs.githubToken,
           });
 
-          await newOctokit.users.getAuthenticated();
+          const { data } = await newOctokit.users.getAuthenticated();
 
           setOctokit(newOctokit);
+          setUser(data);
           setIsAuthenticated(true);
         }
 
@@ -163,18 +217,24 @@ export function useAuth() {
         console.warn('Stored token invalid');
         await logout();
       } finally {
-        setLoading(false);
+        setIsLoading(false);
       }
     };
 
     init();
   }, [handleCallback, logout]);
 
+  /* =========================
+     Return (ALINEADO CON App.tsx)
+  ========================= */
+
   return {
     octokit,
     isAuthenticated,
-    loading,
+    isLoading,
+    user,
     login,
     logout,
+    handleCallback,
   };
 }
